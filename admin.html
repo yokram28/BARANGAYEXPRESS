@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Barangay Express Admin</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+        /* --- ADMIN SPECIFIC STYLES --- */
+        body { 
+            overflow: hidden; 
+            background: linear-gradient(180deg, #071028, #1146a8); 
+            font-family: "Inter", sans-serif;
+        }
+
+        /* Top Bar */
+        .admin-top-bar {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        /* BIGGER TITLE */
+        .brand-group h1 { margin: 0; font-size: 36px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; color: white; }
+        .brand-group span { color: var(--accent-2); font-size: 16px; font-weight: 600; letter-spacing: 1px; }
+        
+        .time-display { text-align: right; }
+        .time-clock { font-size: 24px; font-weight: 700; color: white; }
+        .date-text { font-size: 14px; color: var(--muted); text-transform: uppercase; }
+
+        /* Main Container */
+        .admin-wrapper {
+            padding: 30px 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+            height: calc(100vh - 90px);
+        }
+
+        /* Navigation */
+        .nav-bar { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .nav-tabs { display: flex; gap: 15px; }
+        .nav-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 12px 25px;
+            border-radius: 12px;
+            color: #ccc;
+            cursor: pointer;
+            font-weight: 600;
+            display: flex; align-items: center; gap: 10px; font-size: 16px;
+        }
+        .nav-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+        /* DASHBOARD GRID */
+        .dashboard-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 25px; }
+        
+        .metric-card {
+            background: rgba(30, 41, 59, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            position: relative;
+            overflow: hidden;
+            height: 160px; /* Taller */
+            display: flex; flex-direction: column; justify-content: center;
+        }
+        .metric-label { font-size: 14px; color: var(--muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
+        .metric-value { font-size: 48px; font-weight: 900; color: white; margin-top: 10px; }
+        .metric-icon-svg { position: absolute; top: 20px; right: 20px; width: 40px; height: 40px; opacity: 0.2; color: white; }
+        .highlight-green { color: var(--ok); }
+
+        /* DOCUMENT CARDS - BIGGER & SPECIFIC ICONS */
+        .doc-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 25px; grid-column: span 3; margin-top: 20px; }
+        
+        .doc-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            padding: 40px 30px; /* More padding */
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            transition: transform 0.2s;
+        }
+        .doc-card:hover { background: rgba(255, 255, 255, 0.08); transform: translateY(-5px); }
+        
+        /* Specific Icon Colors */
+        .icon-clearance { color: #2E86C1; }
+        .icon-residency { color: #00d4ff; }
+        .icon-indigency { color: #10b981; }
+
+        .doc-card-icon { 
+            width: 80px; height: 80px; 
+            background: rgba(0,0,0,0.3); 
+            border-radius: 50%; 
+            display: flex; align-items: center; justify-content: center; 
+            flex-shrink: 0;
+        }
+        .doc-card-icon svg { width: 40px; height: 40px; }
+
+        .doc-card-info { display: flex; flex-direction: column; justify-content: center; }
+        .doc-card-count { font-size: 42px; font-weight: 800; color: white; line-height: 1; margin-bottom: 5px; }
+        .doc-card-title { font-size: 14px; color: var(--muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
+
+        /* RECORDS VIEW */
+        .records-view { display: none; height: 100%; flex-direction: column; }
+        .toolbar { display: flex; gap: 15px; margin-bottom: 20px; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 16px; }
+        
+        /* BLACK TEXT IN DROPDOWNS */
+        .filter-input { 
+            background: white; 
+            border: 1px solid #ccc; 
+            color: black; 
+            padding: 12px; 
+            border-radius: 8px; 
+            font-size: 16px; 
+            font-weight: 600;
+        }
+        
+        .table-container { 
+            flex-grow: 1; 
+            overflow-y: auto; 
+            background: rgba(30, 41, 59, 0.6); 
+            border-radius: 16px; 
+            border: 1px solid rgba(255,255,255,0.1); 
+        }
+        table { width: 100%; border-collapse: collapse; color: #ddd; font-size: 16px; }
+        th { background: rgba(0,0,0,0.4); color: var(--accent-2); padding: 18px; text-align: left; position: sticky; top: 0; }
+        td { padding: 15px 18px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+
+        /* KEYBOARD */
+        .admin-keyboard {
+            position: fixed; bottom: -300px; left: 0; width: 100%; height: 300px;
+            background: #0f172a; border-top: 1px solid rgba(255,255,255,0.2);
+            transition: bottom 0.3s; z-index: 200;
+            display: flex; flex-direction: column; padding: 10px;
+        }
+        .admin-keyboard.show { bottom: 0; }
+        .kb-row { display: flex; gap: 5px; flex: 1; justify-content: center; margin-bottom: 5px; }
+        .kb-key { flex: 1; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); color: white; font-size: 20px; border-radius: 5px; cursor: pointer; }
+        .kb-key:active { background: var(--accent); }
+        .kb-close { position: absolute; top: -40px; right: 20px; background: var(--err); color: white; padding: 5px 15px; border-radius: 5px 5px 0 0; cursor: pointer; }
+
+        /* REPORT MODAL */
+        .report-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center; }
+        .report-card { background: white; width: 800px; height: 500px; padding: 20px; display: flex; flex-direction: column; }
+        .report-preview { flex-grow: 1; border: 1px solid #ccc; overflow: auto; padding: 20px; color: black; font-family: sans-serif; }
+        .report-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+        
+        /* LOCK SCREEN (Fixed layout) */
+        .login-overlay { position: fixed; inset: 0; background: linear-gradient(180deg, #071028, #1146a8); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+        .login-card { background: rgba(30, 41, 59, 0.9); padding: 40px; border-radius: 20px; text-align: center; border: 1px solid rgba(255,255,255,0.1); width: 340px; box-shadow: 0 30px 80px rgba(0,0,0,0.8); backdrop-filter: blur(20px); max-width: 90%; }
+        .login-input { width: 100%; padding: 15px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 8px; margin: 20px 0; font-size: 24px; text-align: center; letter-spacing: 5px; font-weight: bold; }
+        .btn-link { background: none; border: none; color: var(--muted); cursor: pointer; margin-top: 20px; text-decoration: none; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+    <div id="login-screen" class="login-overlay">
+        <div class="login-card">
+            <h3 style="margin:0; color:white; font-size: 24px;">ADMIN LOCKED</h3>
+            <input type="password" id="pin-input" class="login-input" placeholder="••••" maxlength="8" autofocus>
+            <button class="btn primary large" style="width:100%; margin-top: 10px;" onclick="attemptLogin()">UNLOCK SYSTEM</button>
+            <button class="btn-link" onclick="location.href='/'">Back to Kiosk</button>
+        </div>
+    </div>
+
+    <div id="admin-interface" style="display:none;">
+        <div class="admin-top-bar">
+            <div class="brand-group">
+                <h1>BARANGAY EXPRESS</h1>
+                <span style="color:#00d4ff;">ADMIN DASHBOARD</span>
+            </div>
+            <div class="time-display">
+                <div class="time-clock" id="clock">00:00:00</div>
+                <div class="date-text" id="date">DATE</div>
+            </div>
+        </div>
+
+        <div class="admin-wrapper">
+            <div class="nav-bar">
+                <div class="nav-tabs">
+                    <div class="nav-btn active" id="tab-dash" onclick="switchTab('dash')">Overview</div>
+                    <div class="nav-btn" id="tab-recs" onclick="switchTab('recs')">Transaction Records</div>
+                </div>
+                <button class="btn secondary" style="border-color:#ff6b6b; color:#ff6b6b;" onclick="location.href='/'">EXIT ADMIN</button>
+            </div>
+
+            <div id="view-dashboard">
+                <div class="dashboard-grid">
+                    <div class="metric-card">
+                        <svg class="metric-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path></svg>
+                        <div class="metric-label">Users Today</div>
+                        <div class="metric-value" id="today-users">0</div>
+                    </div>
+                    <div class="metric-card">
+                        <svg class="metric-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
+                        <div class="metric-label">Revenue Today</div>
+                        <div class="metric-value highlight-green" id="today-revenue">₱0.00</div>
+                    </div>
+                    <div class="metric-card">
+                        <svg class="metric-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>
+                        <div class="metric-label">Total Revenue</div>
+                        <div class="metric-value" style="color:#00d4ff;" id="total-revenue">₱0</div>
+                    </div>
+
+                    <div class="doc-stats-grid">
+                        <div class="doc-card">
+                            <div class="doc-card-icon icon-clearance">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                            </div>
+                            <div class="doc-card-info">
+                                <div class="doc-card-count" id="count-clearance">0</div>
+                                <div class="doc-card-title">Barangay Clearance</div>
+                            </div>
+                        </div>
+                        
+                        <div class="doc-card">
+                            <div class="doc-card-icon icon-residency">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                            </div>
+                            <div class="doc-card-info">
+                                <div class="doc-card-count" id="count-residency">0</div>
+                                <div class="doc-card-title">Certificate of Residency</div>
+                            </div>
+                        </div>
+
+                        <div class="doc-card">
+                            <div class="doc-card-icon icon-indigency">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+                            </div>
+                            <div class="doc-card-info">
+                                <div class="doc-card-count" id="count-indigency">0</div>
+                                <div class="doc-card-title">Barangay Indigency</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-records" class="records-view">
+                <div class="toolbar">
+                    <input type="text" id="search-input" class="filter-input" placeholder="Search Name..." onfocus="showKeyboard()" style="flex:1;">
+                    <select id="doc-filter" class="filter-input" onchange="applyFilters()">
+                        <option value="">All Documents</option>
+                        <option value="Barangay Clearance">Barangay Clearance</option>
+                        <option value="Certificate of Residency">Residency</option>
+                        <option value="Barangay Indigency">Indigency</option>
+                    </select>
+                    <input type="date" id="date-filter" class="filter-input" onchange="applyFilters()">
+                    <button class="btn primary" onclick="showReportModal()">Print Report</button>
+                    <button class="btn success" onclick="window.open('/api/export_csv', '_blank')">CSV</button>
+                </div>
+                <div class="table-container">
+                    <table id="logs-table">
+                        <thead><tr><th>Time</th><th>Document</th><th>Name</th><th>Amount</th></tr></thead>
+                        <tbody id="logs-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="admin-keyboard" class="admin-keyboard">
+        <div class="kb-close" onclick="hideKeyboard()">CLOSE ▼</div>
+        <div class="kb-row"><button class="kb-key">Q</button><button class="kb-key">W</button><button class="kb-key">E</button><button class="kb-key">R</button><button class="kb-key">T</button><button class="kb-key">Y</button><button class="kb-key">U</button><button class="kb-key">I</button><button class="kb-key">O</button><button class="kb-key">P</button></div>
+        <div class="kb-row"><button class="kb-key">A</button><button class="kb-key">S</button><button class="kb-key">D</button><button class="kb-key">F</button><button class="kb-key">G</button><button class="kb-key">H</button><button class="kb-key">J</button><button class="kb-key">K</button><button class="kb-key">L</button></div>
+        <div class="kb-row"><button class="kb-key">Z</button><button class="kb-key">X</button><button class="kb-key">C</button><button class="kb-key">V</button><button class="kb-key">B</button><button class="kb-key">N</button><button class="kb-key">M</button><button class="kb-key" style="flex:1.5">⌫</button></div>
+    </div>
+
+    <div id="report-modal" class="report-modal">
+        <div class="report-card">
+            <h3 style="color:black; margin:0 0 10px 0;">Print Preview</h3>
+            <div id="report-preview-content" class="report-preview"></div>
+            <div class="report-actions">
+                <button class="btn secondary" style="border-color:#ccc; color:#555;" onclick="closeReportModal()">Cancel</button>
+                <button class="btn primary" onclick="confirmPrintReport()">Print Now</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allLogs = [];
+        
+        // --- LOGIC ---
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', {hour12:true});
+            document.getElementById('date').textContent = now.toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
+        }
+        setInterval(updateClock, 1000); updateClock();
+
+        async function attemptLogin() {
+            const pin = document.getElementById('pin-input').value;
+            try {
+                const res = await fetch('/admin/auth', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({pin})});
+                if((await res.json()).ok) {
+                    document.getElementById('login-screen').style.display='none';
+                    document.getElementById('admin-interface').style.display='block';
+                    loadData();
+                } else { alert("Incorrect PIN"); document.getElementById('pin-input').value=""; }
+            } catch(e) { alert("Connection Error"); }
+        }
+        document.getElementById('pin-input').addEventListener('keypress', e=>{if(e.key==='Enter')attemptLogin()});
+
+        function switchTab(t) {
+            document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+            document.getElementById(`tab-${t}`).classList.add('active');
+            document.getElementById('view-dashboard').style.display = t==='dash'?'block':'none';
+            document.getElementById('view-records').style.display = t==='recs'?'flex':'none';
+        }
+
+        async function loadData() {
+            try {
+                const res = await fetch('/api/logs');
+                const data = await res.json();
+                if(data.ok) { allLogs = data.logs; processData(allLogs); renderTable(allLogs); }
+            } catch(e){}
+        }
+
+        function processData(logs) {
+            const todayStr = new Date().toISOString().split('T')[0];
+            const todayLogs = logs.filter(l => l.timestamp.startsWith(todayStr));
+            
+            document.getElementById('today-users').textContent = todayLogs.length;
+            document.getElementById('today-revenue').textContent = `₱${todayLogs.reduce((s,l)=>s+(l.amount_paid||0),0).toFixed(2)}`;
+            document.getElementById('total-revenue').textContent = `₱${logs.reduce((s,l)=>s+(l.amount_paid||0),0).toLocaleString()}`;
+
+            const counts = {"Barangay Clearance":0, "Certificate of Residency":0, "Barangay Indigency":0};
+            todayLogs.forEach(l => { if(counts[l.document_type]!==undefined) counts[l.document_type]++; });
+            
+            document.getElementById('count-clearance').textContent = counts["Barangay Clearance"];
+            document.getElementById('count-residency').textContent = counts["Certificate of Residency"];
+            document.getElementById('count-indigency').textContent = counts["Barangay Indigency"];
+        }
+
+        function renderTable(logs) {
+            const tb = document.getElementById('logs-body'); tb.innerHTML = '';
+            if(!logs.length) { tb.innerHTML='<tr><td colspan="4" style="text-align:center; padding:20px;">No Records</td></tr>'; return; }
+            logs.forEach(r => {
+                tb.innerHTML += `<tr>
+                    <td>${new Date(r.timestamp).toLocaleString()}</td>
+                    <td style="color:#00d4ff">${r.document_type}</td>
+                    <td>${r.full_name}</td>
+                    <td style="color:#10b981; font-weight:bold;">₱${r.amount_paid}</td>
+                </tr>`;
+            });
+        }
+
+        function applyFilters() {
+            const s = document.getElementById('search-input').value.toLowerCase();
+            const d = document.getElementById('doc-filter').value;
+            const dt = document.getElementById('date-filter').value;
+            const filtered = allLogs.filter(i => 
+                i.full_name.toLowerCase().includes(s) &&
+                (!d || i.document_type === d) &&
+                (!dt || i.timestamp.startsWith(dt))
+            );
+            renderTable(filtered);
+        }
+
+        // --- KEYBOARD ---
+        function showKeyboard() { document.getElementById('admin-keyboard').classList.add('show'); }
+        function hideKeyboard() { document.getElementById('admin-keyboard').classList.remove('show'); }
+        document.querySelectorAll('.kb-key').forEach(k => {
+            k.addEventListener('click', () => {
+                const inp = document.getElementById('search-input');
+                if(k.textContent === '⌫') inp.value = inp.value.slice(0,-1);
+                else inp.value += k.textContent;
+                applyFilters();
+                inp.focus();
+            });
+        });
+
+        // --- REPORT PRINTING ---
+        function showReportModal() {
+            const tableHTML = document.getElementById('logs-table').outerHTML;
+            // Generate Preview HTML with Logo Placeholder
+            const html = `
+                <div style="text-align:center; font-family:sans-serif;">
+                    <img src="__LOGO_DATA_URI__" style="width:80px; opacity:0.5;">
+                    <h2>Barangay Karuhatan</h2>
+                    <h3>Transaction Report</h3>
+                    <p>Generated: ${new Date().toLocaleString()}</p>
+                    ${tableHTML.replace('color: #ddd', 'color: black').replace('background: rgba(30, 41, 59, 0.6)', '')}
+                </div>
+            `;
+            document.getElementById('report-preview-content').innerHTML = html.replace('__LOGO_DATA_URI__', 'logo-karuhatan.png'); // Show local img for preview
+            document.getElementById('report-modal').style.display = 'flex';
+        }
+        function closeReportModal() { document.getElementById('report-modal').style.display = 'none'; }
+        
+        async function confirmPrintReport() {
+            const content = document.getElementById('report-preview-content').innerHTML;
+            // Swap back placeholder for server injection
+            const finalHtml = `<html><head><style>table{width:100%;border-collapse:collapse;}th,td{border:1px solid #000;padding:5px;}</style></head><body>${content.replace('logo-karuhatan.png', '__LOGO_DATA_URI__')}</body></html>`;
+            
+            try {
+                await fetch('/admin/print_report', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({html:finalHtml}) });
+                alert("Report sent to printer.");
+                closeReportModal();
+            } catch(e){ alert("Print Failed"); }
+        }
+    </script>
+</body>
+</html>

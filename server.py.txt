@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+# server.py
+# COMPLETE: Real OCR + Coin Slot + Print + Secure Admin + Logging + Visuals
+
+import difflib
+import time
+import threading
+import os
+import json
+import re
+import subprocess
+import base64
+import sqlite3
+import csv
+import io
+import pdfkit 
+from pathlib import Path
+from flask import Flask, Response, send_from_directory, jsonify, request, stream_with_context, make_response
+
+# --- Config ---
+BASE = Path(__file__).resolve().parent
+WEB_STATIC = BASE.joinpath("web_static")
+CAPTURE_DIR = WEB_STATIC.joinpath("capture")
+TEMP_DIR = BASE.joinpath("temp_print") 
+DB_PATH = BASE.joinpath("kiosk_data.db")
+
+# *** ADMIN SECURITY ***
+ADMIN_PIN = "1234"  # Change this PIN here
+
+TEMP_DIR.mkdir(exist_ok=True)
+PRINTER_NAME = "EpsonL120" 
+MJPEG_BOUNDARY = b'--frame'
+DEFAULT_PREVIEW_SIZE = (1280, 720)
+DEFAULT_JPEG_QUALITY = 85
+COIN_PIN = 17 
+
+app = Flask(__name__, static_folder=None)
+CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+
+_latest_jpeg = None
+_lock = threading.Lock()
+_stop_event = threading.Event()
+_ocr_results = {}
+
+# --- Verification Data ---
+VALID_BARANGAYS = [
+    "ARKONG BATO", "BAGBAGUIN", "BALANGKAS", "BARANGKA", "BIGNAY", "BISIG",
+    "CANUMAY EAST", "CANUMAY WEST", "COLOONG", "DALANDANAN", "HEN. T. DE LEON",
+    "ISLA", "KARUHATAN", "LAWANG BATO", "LINGUNAN", "MABOLO", "MALANDAY",
+    "MALINTA", "MAPULANG LUPA", "MARULAS", "MAYSAN", "PALASAN", "PARADA",
+    "PARIANCILLO VILLA", "PASO DE BLAS", "PASOLO", "POBLACION", "PULO",
+    "PUNTURIN", "RINCON", "TAGALAG", "UGONG", "VEINTE REALES", "WAWANG PULO"
+]
+
+# ==============================================================================
+#  DATABASE
+# ==============================================================================
+def init_db():
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    document_type TEXT,
+                    full_name TEXT,
+                    address TEXT,
+                    purpose TEXT,
+                    amount_paid REAL
+                )''')
+    conn.commit()
+    conn.close()
+
+def log_transaction(doc_type, name, address, purpose, amount):
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        c = conn.cursor()
+        c.execute("INSERT INTO transactions (document_type, full_name, address, purpose, amount_paid) VALUES (?, ?, ?, ?, ?)",
+                  (doc_type, name, address, purpose, amount))
+        conn.commit()
+        conn.close()
+        print("Log: Transaction saved.")
+    except Exception as e:
+        print(f"Log: DB Error -> {e}")
+
+init_db()
+
+# ==============================================================================
+#  HARDWARE: COIN SLOT
+# ==============================================================================
+class CoinAcceptor:
+    def __init__(self, pin):
+        self.pin = pin
+        self.total_inserted = 0
+        self.sensor = None
+        self.enabled = False 
+        self.last_pulse_time = 0
+        self._setup_gpio()
+
+    def _setup_gpio(self):
+        try:
+            from gpiozero import Button
+            self.sensor = Button(self.pin, pull_up=True, bounce_time=None)
+            self.sensor.when_pressed = self._pulse_callback
+            print(f"Log: Coin Slot Active on GPIO {self.pin}")
+        except ImportError:
+            print("Log: gpiozero not found.")
+        except Exception as e:
+            print(f"Log: GPIO Error: {e}")
+
+    def _pulse_callback(self, device):
+        if not self.enabled: return 
+        current_time = time.time()
+        if (current_time - self.last_pulse_time) < 0.05: return 
+        self.last_pulse_time = current_time
+
+        with _lock:
+            self.total_inserted += 1
+            print(f"💰 Coin Pulse! Total: {self.total_inserted}")
+
+    def start_accepting(self):
+        with _lock: self.enabled = True
+
+    def stop_accepting(self):
+        with _lock: self.enabled = False
+
+    def reset_and_disable(self):
+        with _lock:
+            self.total_inserted = 0
+            self.enabled = False
+
+    def get_total(self):
+        return self.total_inserted
+
+coin_slot = CoinAcceptor(COIN_PIN)
+
+# ==============================================================================
+#  CAMERA & OCR
+# ==============================================================================
+class CameraManager:
+    def __init__(self):
+        self.camera_type = "NONE"
+        self._detect_camera()
+
+    def _detect_camera(self):
+        try:
+            from picamera2 import Picamera2
+            self.camera_type = "PICAMERA2"
+            print("Log: Picamera2 detected.")
+            return
+        except ImportError: pass
+        try:
+            import cv2
+            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            if cap.isOpened():
+                self.camera_type = "OPENCV"
+                cap.release()
+                print("Log: USB Camera detected.")
+                return
+        except ImportError: pass
+        self.camera_type = "MOCK"
+        print("Log: Using Mock Camera.")
+
+    def run(self):
+        global _latest_jpeg
+        if self.camera_type == "PICAMERA2":
+            try:
+                from picamera2 import Picamera2
+                import cv2
+                import numpy as np
+                picam = Picamera2()
+                config = picam.create_preview_configuration(main={"size": DEFAULT_PREVIEW_SIZE})
+                picam.configure(config)
+                picam.start()
+                picam.set_controls({"AfMode": 2})
+                while not _stop_event.is_set():
+                    arr = picam.capture_array()
+                    if not arr.flags['C_CONTIGUOUS']: arr = np.ascontiguousarray(arr)
+                    _, jpg = cv2.imencode('.jpg', arr, [int(cv2.IMWRITE_JPEG_QUALITY), DEFAULT_JPEG_QUALITY])
+                    with _lock: _latest_jpeg = jpg.tobytes()
+                    time.sleep(0.04)
+            except: self.camera_type = "MOCK"; self.run()
+        elif self.camera_type == "OPENCV":
+            import cv2
+            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 1) 
+            while not _stop_event.is_set():
+                ret, frame = cap.read()
+                if ret:
+                    _, jpg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), DEFAULT_JPEG_QUALITY])
+                    with _lock: _latest_jpeg = jpg.tobytes()
+                    time.sleep(0.04)
+                else: cap.release(); time.sleep(1); cap.open(0, cv2.CAP_V4L2)
+        if self.camera_type == "MOCK" or _latest_jpeg is None:
+            import cv2
+            import numpy as np
+            while not _stop_event.is_set():
+                img = np.zeros((720, 1280, 3), dtype=np.uint8)
+                cv2.putText(img, "NO CAMERA", (100, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (255,255,255), 4)
+                _, jpg = cv2.imencode('.jpg', img)
+                with _lock: _latest_jpeg = jpg.tobytes()
+                time.sleep(0.1)
+
+threading.Thread(target=CameraManager().run, daemon=True).start()
+
+class OCRProcessor:
+    @staticmethod
+    def preprocess_image(image_path):
+        import cv2
+        import numpy as np
+        img = cv2.imread(image_path)
+        if img is None: return None
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+        binary = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        return binary
+
+    @staticmethod
+    def verify_location_only(processed_img):
+        import pytesseract
+        try:
+            text = pytesseract.image_to_string(processed_img, config='--psm 6')
+        except Exception: return False, "OCR Failed"
+        clean_text = re.sub(r'[^A-Z0-9\s]', ' ', text.upper())
+        city_match = difflib.get_close_matches("VALENZUELA", clean_text.split(), n=1, cutoff=0.75)
+        brgy_match = None
+        for b in VALID_BARANGAYS:
+            if b in clean_text: brgy_match = b; break
+        valid = bool(city_match or brgy_match)
+        reason = "Location Not Found"
+        if brgy_match: reason = f"Verified: {brgy_match}"
+        elif city_match: reason = "Verified: Valenzuela City"
+        else: reason = "Address Invalid"
+        return valid, reason
+
+def process_job(path, jid):
+    try:
+        proc = OCRProcessor.preprocess_image(str(path))
+        valid, reason = OCRProcessor.verify_location_only(proc)
+        _ocr_results[jid] = {"status": "done", "valid": valid, "reason": reason}
+    except Exception: _ocr_results[jid] = {"status": "error"}
+
+@app.route("/")
+def index(): return send_from_directory(str(WEB_STATIC), "index.html")
+
+# --- ADMIN ROUTES ---
+@app.route("/admin")
+def admin_page(): 
+    return send_from_directory(str(WEB_STATIC), "admin.html")
+
+@app.route("/admin/auth", methods=["POST"])
+def admin_auth():
+    pin = request.json.get("pin")
+    if pin == ADMIN_PIN:
+        return jsonify({"ok": True})
+    return jsonify({"ok": False})
+
+@app.route("/admin/print_report", methods=["POST"])
+def print_report():
+    try:
+        html_content = request.json.get('html')
+        if not html_content: return jsonify({"ok": False, "error": "No content"})
+        
+        # Inject watermark if placeholder exists
+        img_path = WEB_STATIC.joinpath("logo-karuhatan.png")
+        if img_path.exists():
+            with open(img_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode('utf-8')
+                data_uri = f"data:image/png;base64,{b64}"
+                html_content = html_content.replace('__LOGO_DATA_URI__', data_uri)
+
+        pdf_filename = f"report_{int(time.time())}.pdf"
+        pdf_path = TEMP_DIR.joinpath(pdf_filename)
+        
+        # Landscape for data table
+        options = {
+            'page-size': 'Letter',
+            'orientation': 'Landscape', 
+            'margin-top': '0.5in', 'margin-right': '0.5in',
+            'margin-bottom': '0.5in', 'margin-left': '0.5in',
+            'encoding': "UTF-8", 'no-background': None 
+        }
+        pdfkit.from_string(html_content, str(pdf_path), options=options)
+        
+        print(f"Log: Printing Admin Report {pdf_path}")
+        subprocess.check_output(["lp", "-d", PRINTER_NAME, str(pdf_path)])
+        
+        return jsonify({"ok": True})
+    except Exception as e:
+        print(e)
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/api/logs")
+def get_logs():
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT * FROM transactions ORDER BY id DESC")
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return jsonify({"ok": True, "logs": rows})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/api/export_csv")
+def export_csv():
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        c = conn.cursor()
+        c.execute("SELECT * FROM transactions ORDER BY id DESC")
+        rows = c.fetchall()
+        
+        si = io.StringIO()
+        cw = csv.writer(si)
+        cw.writerow(["ID", "Timestamp", "Document Type", "Full Name", "Address", "Purpose", "Amount Paid"])
+        cw.writerows(rows)
+        output = make_response(si.getvalue())
+        output.headers["Content-Disposition"] = "attachment; filename=kiosk_logs.csv"
+        output.headers["Content-type"] = "text/csv"
+        conn.close()
+        return output
+    except Exception as e:
+        return str(e)
+
+@app.route("/<path:p>")
+def static_files(p): return send_from_directory(str(WEB_STATIC), p)
+
+@app.route("/mjpeg")
+def mjpeg():
+    def gen():
+        while True:
+            with _lock: frame = _latest_jpeg
+            if frame: yield (MJPEG_BOUNDARY + b'\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(frame)).encode() + b'\r\n\r\n' + frame + b'\r\n')
+            time.sleep(0.05)
+    return Response(stream_with_context(gen()), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route("/capture", methods=["POST"])
+def capture():
+    with _lock: data = _latest_jpeg
+    fn = f"cap_{int(time.time())}.jpg"
+    with open(CAPTURE_DIR.joinpath(fn), "wb") as f: f.write(data)
+    return jsonify({"ok": True, "file": f"/capture/{fn}"})
+
+@app.route("/ocr_start", methods=["POST"])
+def ocr_start():
+    path = request.json.get("path", "").lstrip("/")
+    job_id = f"job_{int(time.time())}"
+    threading.Thread(target=process_job, args=(WEB_STATIC.joinpath(path), job_id)).start()
+    return jsonify({"ok": True, "job": job_id})
+
+@app.route("/ocr_status")
+def ocr_status():
+    res = _ocr_results.get(request.args.get('job'))
+    return jsonify({"ok": True, "result": res or {"status": "pending"}})
+
+@app.route("/coin/reset", methods=["POST"])
+def coin_reset():
+    coin_slot.reset_and_disable()
+    return jsonify({"ok": True})
+@app.route("/coin/start", methods=["POST"])
+def coin_start():
+    coin_slot.start_accepting()
+    return jsonify({"ok": True})
+@app.route("/coin/stop", methods=["POST"])
+def coin_stop():
+    coin_slot.stop_accepting()
+    return jsonify({"ok": True})
+@app.route("/coin/status")
+def coin_status():
+    return jsonify({"ok": True, "total": coin_slot.get_total()})
+@app.route("/payment/confirm", methods=["POST"])
+def p(): return jsonify({"ok": True})
+
+@app.route("/print", methods=["POST"])
+def pt():
+    try:
+        data = request.json
+        html_content = data.get('html')
+        meta = data.get('meta', {})
+
+        if not html_content: return jsonify({"ok": False, "error": "No HTML"})
+        
+        if meta:
+            log_transaction(
+                doc_type=meta.get('docType', 'Unknown'),
+                name=meta.get('fullName', 'Unknown'),
+                address=meta.get('address', 'Unknown'),
+                purpose=meta.get('purpose', 'N/A'),
+                amount=meta.get('price', 0)
+            )
+
+        img_path = WEB_STATIC.joinpath("logo-karuhatan.png")
+        if img_path.exists():
+            with open(img_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode('utf-8')
+                data_uri = f"data:image/png;base64,{b64}"
+                html_content = html_content.replace('__LOGO_DATA_URI__', data_uri)
+        
+        pdf_filename = f"print_{int(time.time())}.pdf"
+        pdf_path = TEMP_DIR.joinpath(pdf_filename)
+        
+        options = {
+            'page-size': 'Letter',
+            'margin-top': '0.75in', 'margin-right': '0.75in',
+            'margin-bottom': '0.75in', 'margin-left': '0.75in',
+            'encoding': "UTF-8", 'enable-local-file-access': None, 'no-background': None 
+        }
+        pdfkit.from_string(html_content, str(pdf_path), options=options)
+        
+        result = subprocess.check_output(["lp", "-d", PRINTER_NAME, str(pdf_path)], stderr=subprocess.STDOUT).decode('utf-8')
+        job_id_match = re.search(r"request id is ([\w-]+)", result)
+        job_id = job_id_match.group(1) if job_id_match else None
+        
+        return jsonify({"ok": True, "job_id": job_id})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/print/status")
+def print_status():
+    job_id = request.args.get('job_id')
+    if not job_id: return jsonify({"status": "completed"}) 
+    try:
+        output = subprocess.check_output(["lpstat", "-o"], stderr=subprocess.STDOUT).decode('utf-8')
+        if job_id in output:
+            return jsonify({"status": "printing"})
+        else:
+            return jsonify({"status": "completed"})
+    except:
+        return jsonify({"status": "completed"})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, threaded=True)
